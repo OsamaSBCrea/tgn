@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -55,11 +56,12 @@ def reindex(df, bipartite=True):
 
 
 def run(data_name, bipartite=True):
-    Path("data/").mkdir(parents=True, exist_ok=True)
-    PATH = "./data/{}.csv".format(data_name)
-    OUT_DF = "./data/ml_{}.csv".format(data_name)
-    OUT_FEAT = "./data/ml_{}.npy".format(data_name)
-    OUT_NODE_FEAT = "./data/ml_{}_node.npy".format(data_name)
+    DATA_DIR = "./data/"
+    Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+    PATH = os.path.join(DATA_DIR, "{}.csv".format(data_name))
+    OUT_DF = os.path.join(DATA_DIR, "ml_{}.csv".format(data_name))
+    OUT_FEAT = os.path.join(DATA_DIR, "ml_{}.npy".format(data_name))
+    OUT_NODE_FEAT = os.path.join(DATA_DIR, "ml_{}_node.npy".format(data_name))
 
     df, feat = preprocess(PATH)
     new_df = reindex(df, bipartite)
