@@ -7,6 +7,7 @@ PIP = $(VENV_DIR)/bin/pip
 dataset = wikipedia
 prefix = tgn-attn
 runs = 10
+epochs = 50
 
 # Create virtual environment
 venv:
@@ -34,7 +35,7 @@ data.preprocess:
 	$(PYTHON) src/tgn/utils/preprocess_data.py --data $(dataset) --bipartite
 
 train.self-supervised:
-	$(PYTHON) src/tgn/train_self_supervised.py -d $(dataset) --use_memory --prefix $(prefix) --n_runs $(runs)
+	$(PYTHON) src/tgn/train_self_supervised.py -d $(dataset) --use_memory --prefix $(prefix) --n_runs $(runs) --n_epoch $(epochs)
 
 train.supervised:
-	$(PYTHON) src/tgn/train_supervised.py -d $(dataset) --use_memory --prefix $(prefix) --n_runs $(runs)
+	$(PYTHON) src/tgn/train_supervised.py -d $(dataset) --use_memory --prefix $(prefix) --n_runs $(runs) --n_epoch $(epochs)

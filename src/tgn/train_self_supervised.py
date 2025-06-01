@@ -157,6 +157,10 @@ def get_checkpoint_path(epoch):
     return f"./saved_checkpoints/{args.prefix}-{args.data}-{epoch}.pth"
 
 
+def trace_handler(p):
+    p.export_chrome_trace("./tmp/trace_" + str(p.step_num) + ".json")
+
+
 ### set up logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
@@ -286,7 +290,8 @@ for i in range(args.n_runs):
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         record_shapes=True,
-        profile_memory=True,
+        schedule=torch.profiler.schedule(wait=1, warmup=1, active=2),
+        on_trace_ready=trace_handler,
     ) as prof:
         with record_function("model_training"):
             for epoch in epochs_iterator:
@@ -460,8 +465,6 @@ for i in range(args.n_runs):
                 else:
                     torch.save(tgn.state_dict(), get_checkpoint_path(epoch))
 
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
-        pickle.dump(prof, open("profiler_results.pkl", "wb"))
     # Training has finished, we have loaded the best model, and we want to backup its current
     # memory (which has seen validation edges) so that it can also be used when testing on unseen
     # nodes
