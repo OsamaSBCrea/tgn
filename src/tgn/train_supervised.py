@@ -10,10 +10,13 @@ from pathlib import Path
 import torch
 import numpy as np
 
-from .model.tgn import TGN
-from .utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP
-from .utils.data_processing import compute_time_statistics, get_data_node_classification
-from .evaluation.evaluation import eval_node_classification
+from tgn.model.tgn import TGN
+from tgn.utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP
+from tgn.utils.data_processing import (
+    compute_time_statistics,
+    get_data_node_classification,
+)
+from tgn.evaluation.evaluation import eval_node_classification
 
 random.seed(0)
 np.random.seed(0)
