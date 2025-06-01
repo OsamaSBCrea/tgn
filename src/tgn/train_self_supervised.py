@@ -4,6 +4,7 @@ import time
 import sys
 import argparse
 import torch
+from torch.profiler import profile, record_function, ProfilerActivity
 import numpy as np
 import pickle
 from pathlib import Path
@@ -274,7 +275,6 @@ for i in range(args.n_runs):
     early_stopper = EarlyStopMonitor(max_round=args.patience)
 
     epochs_iterator = tqdm(range(NUM_EPOCH), "Epochs", unit="epoch")
-    epochs_iterator.set_description("Epochs")
     epochs_iterator.set_postfix(
         {
             "val_ap": 0.0,
@@ -283,172 +283,184 @@ for i in range(args.n_runs):
             "epoch_time": 0.0,
         }
     )
-    epochs_iterator.refresh()
-    for epoch in epochs_iterator:
-        start_epoch = time.time()
-        ### Training
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        record_shapes=True,
+        profile_memory=True,
+    ) as prof:
+        with record_function("model_training"):
+            for epoch in epochs_iterator:
+                start_epoch = time.time()
+                ### Training
 
-        # Reinitialize memory of the model at the start of each epoch
-        if USE_MEMORY:
-            tgn.memory.__init_memory__()
+                # Reinitialize memory of the model at the start of each epoch
+                if USE_MEMORY:
+                    tgn.memory.__init_memory__()
 
-        # Train using only training graph
-        tgn.set_neighbor_finder(train_ngh_finder)
-        m_loss = []
+                # Train using only training graph
+                tgn.set_neighbor_finder(train_ngh_finder)
+                m_loss = []
 
-        epochs_iterator.set_description(
-            "Epochs (Training) - Epoch {}".format(epoch + 1)
-        )
-
-        batch_iterator = tqdm(
-            range(0, num_batch, args.backprop_every),
-            "Batches",
-            unit="batch",
-            leave=False,
-        )
-        batch_iterator.set_description(
-            "Batches (Training) - Epoch {}".format(epoch + 1)
-        )
-        for k in batch_iterator:
-            loss = 0
-            optimizer.zero_grad()
-
-            # Custom loop to allow to perform backpropagation only every a certain number of batches
-            for j in range(args.backprop_every):
-                batch_idx = k + j
-
-                if batch_idx >= num_batch:
-                    continue
-
-                start_idx = batch_idx * BATCH_SIZE
-                end_idx = min(num_instance, start_idx + BATCH_SIZE)
-                sources_batch, destinations_batch = (
-                    train_data.sources[start_idx:end_idx],
-                    train_data.destinations[start_idx:end_idx],
-                )
-                edge_idxs_batch = train_data.edge_idxs[start_idx:end_idx]
-                timestamps_batch = train_data.timestamps[start_idx:end_idx]
-
-                size = len(sources_batch)
-                _, negatives_batch = train_rand_sampler.sample(size)
-
-                with torch.no_grad():
-                    pos_label = torch.ones(size, dtype=torch.float, device=device)
-                    neg_label = torch.zeros(size, dtype=torch.float, device=device)
-
-                tgn = tgn.train()
-                pos_prob, neg_prob = tgn.compute_edge_probabilities(
-                    sources_batch,
-                    destinations_batch,
-                    negatives_batch,
-                    timestamps_batch,
-                    edge_idxs_batch,
-                    NUM_NEIGHBORS,
+                epochs_iterator.set_description(
+                    "Epochs (Training) - Epoch {}".format(epoch + 1)
                 )
 
-                loss += criterion(pos_prob.squeeze(), pos_label) + criterion(
-                    neg_prob.squeeze(), neg_label
+                batch_iterator = tqdm(
+                    range(0, num_batch, args.backprop_every),
+                    "Batches",
+                    unit="batch",
+                    leave=False,
+                )
+                batch_iterator.set_description(
+                    "Batches (Training) - Epoch {}".format(epoch + 1)
+                )
+                for k in batch_iterator:
+                    loss = 0
+                    optimizer.zero_grad()
+
+                    # Custom loop to allow to perform backpropagation only every a certain number of batches
+                    for j in range(args.backprop_every):
+                        batch_idx = k + j
+
+                        if batch_idx >= num_batch:
+                            continue
+
+                        start_idx = batch_idx * BATCH_SIZE
+                        end_idx = min(num_instance, start_idx + BATCH_SIZE)
+                        sources_batch, destinations_batch = (
+                            train_data.sources[start_idx:end_idx],
+                            train_data.destinations[start_idx:end_idx],
+                        )
+                        edge_idxs_batch = train_data.edge_idxs[start_idx:end_idx]
+                        timestamps_batch = train_data.timestamps[start_idx:end_idx]
+
+                        size = len(sources_batch)
+                        _, negatives_batch = train_rand_sampler.sample(size)
+
+                        with torch.no_grad():
+                            pos_label = torch.ones(
+                                size, dtype=torch.float, device=device
+                            )
+                            neg_label = torch.zeros(
+                                size, dtype=torch.float, device=device
+                            )
+
+                        tgn = tgn.train()
+                        pos_prob, neg_prob = tgn.compute_edge_probabilities(
+                            sources_batch,
+                            destinations_batch,
+                            negatives_batch,
+                            timestamps_batch,
+                            edge_idxs_batch,
+                            NUM_NEIGHBORS,
+                        )
+
+                        loss += criterion(pos_prob.squeeze(), pos_label) + criterion(
+                            neg_prob.squeeze(), neg_label
+                        )
+
+                    loss /= args.backprop_every
+
+                    loss.backward()
+                    optimizer.step()
+                    m_loss.append(loss.item())
+
+                    # Detach memory after 'args.backprop_every' number of batches so we don't backpropagate to
+                    # the start of time
+                    if USE_MEMORY:
+                        tgn.memory.detach_memory()
+
+                epoch_time = time.time() - start_epoch
+                epoch_times.append(epoch_time)
+
+                ### Validation
+                # Validation uses the full graph
+                tgn.set_neighbor_finder(full_ngh_finder)
+
+                if USE_MEMORY:
+                    # Backup memory at the end of training, so later we can restore it and use it for the
+                    # validation on unseen nodes
+                    train_memory_backup = tgn.memory.backup_memory()
+
+                val_ap, val_auc = eval_edge_prediction(
+                    model=tgn,
+                    negative_edge_sampler=val_rand_sampler,
+                    data=val_data,
+                    n_neighbors=NUM_NEIGHBORS,
+                )
+                if USE_MEMORY:
+                    val_memory_backup = tgn.memory.backup_memory()
+                    # Restore memory we had at the end of training to be used when validating on new nodes.
+                    # Also backup memory after validation so it can be used for testing (since test edges are
+                    # strictly later in time than validation edges)
+                    tgn.memory.restore_memory(train_memory_backup)
+
+                # Validate on unseen nodes
+                nn_val_ap, nn_val_auc = eval_edge_prediction(
+                    model=tgn,
+                    negative_edge_sampler=val_rand_sampler,
+                    data=new_node_val_data,
+                    n_neighbors=NUM_NEIGHBORS,
                 )
 
-            loss /= args.backprop_every
+                if USE_MEMORY:
+                    # Restore memory we had at the end of validation
+                    tgn.memory.restore_memory(val_memory_backup)
 
-            loss.backward()
-            optimizer.step()
-            m_loss.append(loss.item())
+                new_nodes_val_aps.append(nn_val_ap)
+                val_aps.append(val_ap)
+                train_losses.append(np.mean(m_loss))
 
-            # Detach memory after 'args.backprop_every' number of batches so we don't backpropagate to
-            # the start of time
-            if USE_MEMORY:
-                tgn.memory.detach_memory()
-
-        epoch_time = time.time() - start_epoch
-        epoch_times.append(epoch_time)
-
-        ### Validation
-        # Validation uses the full graph
-        tgn.set_neighbor_finder(full_ngh_finder)
-
-        if USE_MEMORY:
-            # Backup memory at the end of training, so later we can restore it and use it for the
-            # validation on unseen nodes
-            train_memory_backup = tgn.memory.backup_memory()
-
-        val_ap, val_auc = eval_edge_prediction(
-            model=tgn,
-            negative_edge_sampler=val_rand_sampler,
-            data=val_data,
-            n_neighbors=NUM_NEIGHBORS,
-        )
-        if USE_MEMORY:
-            val_memory_backup = tgn.memory.backup_memory()
-            # Restore memory we had at the end of training to be used when validating on new nodes.
-            # Also backup memory after validation so it can be used for testing (since test edges are
-            # strictly later in time than validation edges)
-            tgn.memory.restore_memory(train_memory_backup)
-
-        # Validate on unseen nodes
-        nn_val_ap, nn_val_auc = eval_edge_prediction(
-            model=tgn,
-            negative_edge_sampler=val_rand_sampler,
-            data=new_node_val_data,
-            n_neighbors=NUM_NEIGHBORS,
-        )
-
-        if USE_MEMORY:
-            # Restore memory we had at the end of validation
-            tgn.memory.restore_memory(val_memory_backup)
-
-        new_nodes_val_aps.append(nn_val_ap)
-        val_aps.append(val_ap)
-        train_losses.append(np.mean(m_loss))
-
-        # Save temporary results to disk
-        pickle.dump(
-            {
-                "val_aps": val_aps,
-                "new_nodes_val_aps": new_nodes_val_aps,
-                "train_losses": train_losses,
-                "epoch_times": epoch_times,
-                "total_epoch_times": total_epoch_times,
-            },
-            open(results_path, "wb"),
-        )
-
-        total_epoch_time = time.time() - start_epoch
-        total_epoch_times.append(total_epoch_time)
-
-        epochs_iterator.set_postfix(
-            {
-                "val_ap": val_ap,
-                "new_nodes_val_ap": nn_val_ap,
-                "train_loss": np.mean(m_loss),
-                "epoch_time": total_epoch_time,
-            }
-        )
-
-        # logger.info("epoch: {} took {:.2f}s".format(epoch, total_epoch_time))
-        # logger.info("Epoch mean loss: {}".format(np.mean(m_loss)))
-        # logger.info("val auc: {}, new node val auc: {}".format(val_auc, nn_val_auc))
-        # logger.info("val ap: {}, new node val ap: {}".format(val_ap, nn_val_ap))
-
-        # Early stopping
-        if early_stopper.early_stop_check(val_ap):
-            logger.info(
-                "No improvement over {} epochs, stop training".format(
-                    early_stopper.max_round
+                # Save temporary results to disk
+                pickle.dump(
+                    {
+                        "val_aps": val_aps,
+                        "new_nodes_val_aps": new_nodes_val_aps,
+                        "train_losses": train_losses,
+                        "epoch_times": epoch_times,
+                        "total_epoch_times": total_epoch_times,
+                    },
+                    open(results_path, "wb"),
                 )
-            )
-            logger.info(f"Loading the best model at epoch {early_stopper.best_epoch}")
-            best_model_path = get_checkpoint_path(early_stopper.best_epoch)
-            tgn.load_state_dict(torch.load(best_model_path))
-            logger.info(
-                f"Loaded the best model at epoch {early_stopper.best_epoch} for inference"
-            )
-            tgn.eval()
-            break
-        else:
-            torch.save(tgn.state_dict(), get_checkpoint_path(epoch))
 
+                total_epoch_time = time.time() - start_epoch
+                total_epoch_times.append(total_epoch_time)
+
+                epochs_iterator.set_postfix(
+                    {
+                        "val_ap": val_ap,
+                        "new_nodes_val_ap": nn_val_ap,
+                        "train_loss": np.mean(m_loss),
+                        "epoch_time": total_epoch_time,
+                    }
+                )
+
+                # logger.info("epoch: {} took {:.2f}s".format(epoch, total_epoch_time))
+                # logger.info("Epoch mean loss: {}".format(np.mean(m_loss)))
+                # logger.info("val auc: {}, new node val auc: {}".format(val_auc, nn_val_auc))
+                # logger.info("val ap: {}, new node val ap: {}".format(val_ap, nn_val_ap))
+
+                # Early stopping
+                if early_stopper.early_stop_check(val_ap):
+                    logger.info(
+                        "No improvement over {} epochs, stop training".format(
+                            early_stopper.max_round
+                        )
+                    )
+                    logger.info(
+                        f"Loading the best model at epoch {early_stopper.best_epoch}"
+                    )
+                    best_model_path = get_checkpoint_path(early_stopper.best_epoch)
+                    tgn.load_state_dict(torch.load(best_model_path))
+                    logger.info(
+                        f"Loaded the best model at epoch {early_stopper.best_epoch} for inference"
+                    )
+                    tgn.eval()
+                    break
+                else:
+                    torch.save(tgn.state_dict(), get_checkpoint_path(epoch))
+
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
     # Training has finished, we have loaded the best model, and we want to backup its current
     # memory (which has seen validation edges) so that it can also be used when testing on unseen
     # nodes
