@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tgn"
+dynamic = ["version"]
+description = "Temporal Graph Neural Networks"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+]
+dependencies = [
+    "pyyaml",
+    "pydantic>=2.11.0",
+    "torch",
+    "numpy",
+    "pandas",
+    "scikit_learn"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyfakefs",
+    "ruff",
+    "pyright~=1.1",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black",
+    "isort",
+    "pre-commit",
+]
+
+[tool.pyright]
+include = ["src"]
+exclude = ["tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.hatch.version]
+path = "src/tgn/__init__.py"
