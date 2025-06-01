@@ -7,11 +7,12 @@ import torch
 import numpy as np
 import pickle
 from pathlib import Path
+from tqdm import tqdm
 
-from .evaluation.evaluation import eval_edge_prediction
-from .model.tgn import TGN
-from .utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
-from .utils.data_processing import get_data, compute_time_statistics
+from tgn.evaluation.evaluation import eval_edge_prediction
+from tgn.model.tgn import TGN
+from tgn.utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
+from tgn.utils.data_processing import get_data, compute_time_statistics
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -208,6 +209,8 @@ nn_test_rand_sampler = RandEdgeSampler(
 
 # Set device
 device_string = "cuda:{}".format(GPU) if torch.cuda.is_available() else "cpu"
+if torch.backends.mps.is_available():
+    device_string = "mps"  # Use Metal Performance Shaders for Apple Silicon
 device = torch.device(device_string)
 
 # Compute time statistics
@@ -269,7 +272,19 @@ for i in range(args.n_runs):
     train_losses = []
 
     early_stopper = EarlyStopMonitor(max_round=args.patience)
-    for epoch in range(NUM_EPOCH):
+
+    epochs_iterator = tqdm(range(NUM_EPOCH), "Epochs", unit="epoch")
+    epochs_iterator.set_description("Epochs")
+    epochs_iterator.set_postfix(
+        {
+            "val_ap": 0.0,
+            "new_nodes_val_ap": 0.0,
+            "train_loss": 0.0,
+            "epoch_time": 0.0,
+        }
+    )
+    epochs_iterator.refresh()
+    for epoch in epochs_iterator:
         start_epoch = time.time()
         ### Training
 
@@ -281,8 +296,20 @@ for i in range(args.n_runs):
         tgn.set_neighbor_finder(train_ngh_finder)
         m_loss = []
 
-        logger.info("start {} epoch".format(epoch))
-        for k in range(0, num_batch, args.backprop_every):
+        epochs_iterator.set_description(
+            "Epochs (Training) - Epoch {}".format(epoch + 1)
+        )
+
+        batch_iterator = tqdm(
+            range(0, num_batch, args.backprop_every),
+            "Batches",
+            unit="batch",
+            leave=False,
+        )
+        batch_iterator.set_description(
+            "Batches (Training) - Epoch {}".format(epoch + 1)
+        )
+        for k in batch_iterator:
             loss = 0
             optimizer.zero_grad()
 
@@ -390,10 +417,19 @@ for i in range(args.n_runs):
         total_epoch_time = time.time() - start_epoch
         total_epoch_times.append(total_epoch_time)
 
-        logger.info("epoch: {} took {:.2f}s".format(epoch, total_epoch_time))
-        logger.info("Epoch mean loss: {}".format(np.mean(m_loss)))
-        logger.info("val auc: {}, new node val auc: {}".format(val_auc, nn_val_auc))
-        logger.info("val ap: {}, new node val ap: {}".format(val_ap, nn_val_ap))
+        epochs_iterator.set_postfix(
+            {
+                "val_ap": val_ap,
+                "new_nodes_val_ap": nn_val_ap,
+                "train_loss": np.mean(m_loss),
+                "epoch_time": total_epoch_time,
+            }
+        )
+
+        # logger.info("epoch: {} took {:.2f}s".format(epoch, total_epoch_time))
+        # logger.info("Epoch mean loss: {}".format(np.mean(m_loss)))
+        # logger.info("val auc: {}, new node val auc: {}".format(val_auc, nn_val_auc))
+        # logger.info("val ap: {}, new node val ap: {}".format(val_ap, nn_val_ap))
 
         # Early stopping
         if early_stopper.early_stop_check(val_ap):

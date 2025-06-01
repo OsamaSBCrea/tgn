@@ -191,6 +191,8 @@ train_ngh_finder = get_neighbor_finder(
 
 # Set device
 device_string = "cuda:{}".format(GPU) if torch.cuda.is_available() else "cpu"
+if torch.backends.mps.is_available():
+    device_string = "mps"  # Use Metal Performance Shaders for Apple Silicon
 device = torch.device(device_string)
 
 # Compute time statistics

@@ -17,7 +17,8 @@ dependencies = [
     "torch",
     "numpy",
     "pandas",
-    "scikit_learn"
+    "scikit_learn",
+    "tqdm"
 ]
 
 [project.optional-dependencies]
