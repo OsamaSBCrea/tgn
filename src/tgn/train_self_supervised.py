@@ -460,7 +460,8 @@ for i in range(args.n_runs):
                 else:
                     torch.save(tgn.state_dict(), get_checkpoint_path(epoch))
 
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        pickle.dump(prof, open("profiler_results.pkl", "wb"))
     # Training has finished, we have loaded the best model, and we want to backup its current
     # memory (which has seen validation edges) so that it can also be used when testing on unseen
     # nodes
